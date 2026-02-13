@@ -78,8 +78,9 @@ pub fn handle_mouse(
 }
 
 fn handle_setup_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
-    handle_cursor_keys(key, &mut ui.cursor);
     let phase_before = game.phase;
+
+    // Handle placement keys (L/V/Backspace) - these should NOT move cursor
     if let GamePhase::Setup(player) = game.phase {
         match key.code {
             KeyCode::Char('l') | KeyCode::Char('L') => {
@@ -93,6 +94,8 @@ fn handle_setup_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
                     }
                     Err(err) => ui.message = format!("Setup error: {:?}", err),
                 }
+                apply_phase_transition(phase_before, game, ui);
+                return;
             }
             KeyCode::Char('v') | KeyCode::Char('V') => {
                 match game.place_setup_card(player, ui.cursor, OnlineCardType::Virus) {
@@ -105,21 +108,32 @@ fn handle_setup_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
                     }
                     Err(err) => ui.message = format!("Setup error: {:?}", err),
                 }
+                apply_phase_transition(phase_before, game, ui);
+                return;
             }
-            KeyCode::Backspace => match game.remove_setup_card(player, ui.cursor) {
-                Ok(()) => {
-                    ui.message = "Removed card".to_string();
-                    if let Some(sender) = &ui.op_sender {
-                        let _ =
-                            sender.send(format!("OP REMOVE {} {}", ui.cursor.row, ui.cursor.col));
+            KeyCode::Backspace => {
+                match game.remove_setup_card(player, ui.cursor) {
+                    Ok(()) => {
+                        ui.message = "Removed card".to_string();
+                        if let Some(sender) = &ui.op_sender {
+                            let _ = sender
+                                .send(format!("OP REMOVE {} {}", ui.cursor.row, ui.cursor.col));
+                        }
                     }
+                    Err(err) => ui.message = format!("Setup error: {:?}", err),
                 }
-                Err(err) => ui.message = format!("Setup error: {:?}", err),
-            },
+                apply_phase_transition(phase_before, game, ui);
+                return;
+            }
             _ => {}
         }
     }
 
+    // For all other keys, allow cursor movement
+    handle_cursor_keys(key, &mut ui.cursor);
+}
+
+fn apply_phase_transition(phase_before: GamePhase, game: &GameState, ui: &mut UiState) {
     if phase_before != game.phase {
         ui.mode = UiMode::TurnPass;
         ui.message = match game.phase {
