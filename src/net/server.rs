@@ -11,11 +11,19 @@ use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use crate::{GameError, GamePhase, GameState, PlayerId, Position};
 use crate::net::protocol::{encode_state, parse_op, Op};
 
+#[derive(Clone, Copy, Debug)]
+pub enum ListenMode {
+    TcpOnly,
+    UnixOnly,
+    Both,
+}
+
 #[derive(Clone)]
 pub struct ServerConfig {
     pub tcp_addr: String,
     pub unix_path: String,
     pub log_path: Option<String>,
+    pub listen_mode: ListenMode,
 }
 
 #[derive(Clone)]
@@ -41,7 +49,16 @@ enum LogSink {
 }
 
 pub async fn run_server(config: ServerConfig) -> io::Result<()> {
-    let logger = Logger::new(config.log_path.as_deref())?;
+    let logger = Logger::new(config.log_path.as_deref()).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "Failed to open log file {}: {}",
+                config.log_path.as_deref().unwrap_or("(stdout)"),
+                err
+            ),
+        )
+    })?;
     let state = Arc::new(Mutex::new(ServerState {
         game: GameState::new(),
         names: ["P1".to_string(), "P2".to_string()],
@@ -53,42 +70,76 @@ pub async fn run_server(config: ServerConfig) -> io::Result<()> {
         let _ = std::fs::remove_file(&config.unix_path);
     }
 
-    let tcp_listener = TcpListener::bind(&config.tcp_addr).await?;
-    let unix_listener = UnixListener::bind(&config.unix_path)?;
+    let tcp_listener_opt = match config.listen_mode {
+        ListenMode::TcpOnly | ListenMode::Both => {
+            let listener = TcpListener::bind(&config.tcp_addr).await.map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("Failed to bind TCP listener at {}: {}", config.tcp_addr, err),
+                )
+            })?;
+            Some(listener)
+        }
+        ListenMode::UnixOnly => None,
+    };
+
+    let unix_listener_opt = match config.listen_mode {
+        ListenMode::UnixOnly | ListenMode::Both => {
+            let listener = UnixListener::bind(&config.unix_path).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("Failed to bind Unix socket at {}: {}", config.unix_path, err),
+                )
+            })?;
+            Some(listener)
+        }
+        ListenMode::TcpOnly => None,
+    };
+
     {
         let server = state.lock().await;
-        server
-            .logger
-            .log(&format!("server_listen tcp={} unix={}", config.tcp_addr, config.unix_path))
-            .await;
+        let mode_str = match config.listen_mode {
+            ListenMode::TcpOnly => format!("tcp={}", config.tcp_addr),
+            ListenMode::UnixOnly => format!("unix={}", config.unix_path),
+            ListenMode::Both => format!("tcp={} unix={}", config.tcp_addr, config.unix_path),
+        };
+        server.logger.log(&format!("server_listen {}", mode_str)).await;
     }
 
-    let state_tcp = state.clone();
-    tokio::spawn(async move {
-        loop {
-            if let Ok((stream, addr)) = tcp_listener.accept().await {
-                {
-                    let server = state_tcp.lock().await;
-                    server
-                        .logger
-                        .log(&format!("accept tcp {}", addr))
-                        .await;
-                }
-                let _ = handle_tcp_client(stream, state_tcp.clone()).await;
-            }
-        }
-    });
-
-    loop {
-        let (stream, _) = unix_listener.accept().await?;
-        let state_unix = state.clone();
+    if let Some(tcp_listener) = tcp_listener_opt {
+        let state_tcp = state.clone();
         tokio::spawn(async move {
-            {
-                let server = state_unix.lock().await;
-                server.logger.log("accept unix").await;
+            loop {
+                if let Ok((stream, addr)) = tcp_listener.accept().await {
+                    {
+                        let server = state_tcp.lock().await;
+                        server
+                            .logger
+                            .log(&format!("accept tcp {}", addr))
+                            .await;
+                    }
+                    let _ = handle_tcp_client(stream, state_tcp.clone()).await;
+                }
             }
-            let _ = handle_unix_client(stream, state_unix).await;
         });
+    }
+
+    if let Some(unix_listener) = unix_listener_opt {
+        loop {
+            let (stream, _) = unix_listener.accept().await?;
+            let state_unix = state.clone();
+            tokio::spawn(async move {
+                {
+                    let server = state_unix.lock().await;
+                    server.logger.log("accept unix").await;
+                }
+                let _ = handle_unix_client(stream, state_unix).await;
+            });
+        }
+    } else {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
     }
 }
 

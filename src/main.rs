@@ -1,7 +1,7 @@
 use std::io::{self, Stdout};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::event::{self, Event};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use rai_net_access_battlers_tui::net::client::{connect_client, ClientConfig, ClientEvent};
-use rai_net_access_battlers_tui::net::server::{run_server, ServerConfig};
+use rai_net_access_battlers_tui::net::server::{run_server, ListenMode, ServerConfig};
 use rai_net_access_battlers_tui::ui::{draw, handle_key, handle_mouse, UiMode, UiState};
 use rai_net_access_battlers_tui::{GamePhase, GameState, PlayerId};
 
@@ -27,10 +27,12 @@ enum Command {
     Server {
         #[arg(long, default_value = "0.0.0.0:2321")]
         tcp: String,
-        #[arg(long, default_value = "/var/run/rainet/rainet.sock")]
+        #[arg(long, default_value = "/tmp/rainet.sock")]
         unix: String,
         #[arg(long)]
         log: Option<String>,
+        #[arg(long, value_enum, default_value = "both")]
+        mode: ListenModeArg,
     },
     Client {
         #[arg(long)]
@@ -42,10 +44,30 @@ enum Command {
     },
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum ListenModeArg {
+    #[value(name = "tcp")]
+    Tcp,
+    #[value(name = "unix")]
+    Unix,
+    #[value(name = "both")]
+    Both,
+}
+
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Server { tcp, unix, log } => {
+        Command::Server {
+            tcp,
+            unix,
+            log,
+            mode,
+        } => {
+            let listen_mode = match mode {
+                ListenModeArg::Tcp => ListenMode::TcpOnly,
+                ListenModeArg::Unix => ListenMode::UnixOnly,
+                ListenModeArg::Both => ListenMode::Both,
+            };
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
@@ -53,6 +75,7 @@ fn main() -> io::Result<()> {
                 tcp_addr: tcp,
                 unix_path: unix,
                 log_path: log,
+                listen_mode,
             }))
         }
         Command::Client { tcp, unix, name } => run_client(tcp, unix, name),
