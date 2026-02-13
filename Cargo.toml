@@ -1,8 +1,10 @@
 [package]
 name = "rai-net-access-battlers-tui"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-ratatui = "0.27.0"
-tokio = { version = "1.39.1", features = ["net"] }
+clap = { version = "4.5.58", features = ["derive"] }
+crossterm = "0.29.0"
+ratatui = "0.30.0"
+tokio = { version = "1.49.0", features = ["net"] }
