@@ -2,6 +2,22 @@ use crate::{
     GamePhase, GameState, OnlineCard, OnlineCardType, PlayerId, PlayerState, Position, StackChoice,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomStatus {
+    Waiting,
+    Playing,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoomInfo {
+    pub id: Option<String>,
+    pub name: String,
+    pub player_count: usize,
+    pub spectator_count: usize,
+    pub auto_join: bool,
+    pub status: RoomStatus,
+}
+
 #[derive(Debug, Clone)]
 pub enum Op {
     Setup {
@@ -47,6 +63,21 @@ pub enum Op {
         swap: bool,
     },
     EndTurn,
+    RoomList,
+    RoomCreate {
+        name: String,
+        id: Option<String>,
+        auto_join: bool,
+        show_id: bool,
+    },
+    RoomJoin {
+        id: String,
+    },
+    RoomJoinAsSpectator {
+        id: String,
+    },
+    RoomAutoJoin,
+    RoomLeave,
 }
 
 pub fn parse_op(line: &str) -> Option<Op> {
@@ -124,10 +155,151 @@ pub fn parse_op(line: &str) -> Option<Op> {
                 })
             }
             "ENDTURN" => Some(Op::EndTurn),
+            "ROOM" => match parts.next()? {
+                "LIST" => Some(Op::RoomList),
+                "CREATE" => {
+                    let name = parts.next()?.to_string();
+                    let id_token = parts.next()?.to_string();
+                    let auto_join = match parts.next()? {
+                        "1" => true,
+                        "0" => false,
+                        _ => return None,
+                    };
+                    let show_id = match parts.next()? {
+                        "1" => true,
+                        "0" => false,
+                        _ => return None,
+                    };
+                    let id = if id_token == "-" || id_token.is_empty() {
+                        None
+                    } else {
+                        Some(id_token)
+                    };
+                    Some(Op::RoomCreate {
+                        name,
+                        id,
+                        auto_join,
+                        show_id,
+                    })
+                }
+                "JOIN" => Some(Op::RoomJoin {
+                    id: parts.next()?.to_string(),
+                }),
+                "SPECTATE" => Some(Op::RoomJoinAsSpectator {
+                    id: parts.next()?.to_string(),
+                }),
+                "AUTO" => Some(Op::RoomAutoJoin),
+                "LEAVE" => Some(Op::RoomLeave),
+                _ => None,
+            },
             _ => None,
         },
         _ => None,
     }
+}
+
+pub fn encode_rooms(rooms: &[RoomInfo]) -> String {
+    let mut out = String::new();
+    push_line(&mut out, &format!("ROOMS {}", rooms.len()));
+    for room in rooms {
+        let status = match room.status {
+            RoomStatus::Waiting => "WAITING",
+            RoomStatus::Playing => "PLAYING",
+        };
+        if let Some(id) = &room.id {
+            push_line(
+                &mut out,
+                &format!(
+                    "ROOM {} {} {} {} {} {}",
+                    id,
+                    room.name,
+                    room.player_count,
+                    room.spectator_count,
+                    if room.auto_join { 1 } else { 0 },
+                    status
+                ),
+            );
+        } else {
+            push_line(
+                &mut out,
+                &format!(
+                    "ROOM {} {} {} {} {}",
+                    room.name,
+                    room.player_count,
+                    room.spectator_count,
+                    if room.auto_join { 1 } else { 0 },
+                    status
+                ),
+            );
+        }
+    }
+    out
+}
+
+pub fn parse_rooms(lines: &[String]) -> Option<Vec<RoomInfo>> {
+    let mut rooms = Vec::new();
+    let mut iter = lines.iter();
+    let header = iter.next()?;
+    let mut header_parts = header.split_whitespace();
+    if header_parts.next()? != "ROOMS" {
+        return None;
+    }
+    let count: usize = header_parts.next()?.parse().ok()?;
+    for _ in 0..count {
+        let line = iter.next()?;
+        let mut parts = line.split_whitespace();
+        if parts.next()? != "ROOM" {
+            return None;
+        }
+        let first = parts.next()?.to_string();
+        let second = parts.next()?.to_string();
+        let third = parts.next()?;
+        let (id, name, player_count, spectator_count, auto_join, status) =
+            if let Ok(players) = second.parse::<usize>() {
+                let spectators: usize = third.parse().ok()?;
+                let auto_join = match parts.next()? {
+                    "1" => true,
+                    "0" => false,
+                    _ => return None,
+                };
+                let status = match parts.next()? {
+                    "WAITING" => RoomStatus::Waiting,
+                    "PLAYING" => RoomStatus::Playing,
+                    _ => return None,
+                };
+                (None, first, players, spectators, auto_join, status)
+            } else {
+                let player_count: usize = third.parse().ok()?;
+                let spectator_count: usize = parts.next()?.parse().ok()?;
+                let auto_join = match parts.next()? {
+                    "1" => true,
+                    "0" => false,
+                    _ => return None,
+                };
+                let status = match parts.next()? {
+                    "WAITING" => RoomStatus::Waiting,
+                    "PLAYING" => RoomStatus::Playing,
+                    _ => return None,
+                };
+                (
+                    Some(first),
+                    second,
+                    player_count,
+                    spectator_count,
+                    auto_join,
+                    status,
+                )
+            };
+        rooms.push(RoomInfo {
+            id,
+            name,
+            player_count,
+            spectator_count,
+            auto_join,
+            status,
+        });
+    }
+    Some(rooms)
 }
 
 pub fn encode_state(game: &GameState, names: &[String; 2]) -> String {

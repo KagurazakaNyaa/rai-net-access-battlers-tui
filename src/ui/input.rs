@@ -16,7 +16,7 @@ pub fn handle_key(key: KeyEvent, game: &mut GameState, ui: &mut UiState) -> io::
         return Ok(true);
     }
 
-    if key.code == KeyCode::Char('?') {
+    if key.code == KeyCode::Char('h') || key.code == KeyCode::Char('H') {
         ui.message = help_text(game, ui);
         ui.menu = None;
         return Ok(false);
@@ -28,8 +28,13 @@ pub fn handle_key(key: KeyEvent, game: &mut GameState, ui: &mut UiState) -> io::
         }
     }
 
+    if ui.is_spectator {
+        ui.message = ui.i18n.text("status-spectator");
+        return Ok(false);
+    }
+
     if ui.op_sender.is_some() && ui.local_player != game.current_player {
-        ui.message = "Wait for opponent".to_string();
+        ui.message = ui.i18n.text("status-wait-opponent");
         return Ok(false);
     }
 
@@ -58,12 +63,48 @@ pub fn handle_mouse(
         ui.menu = None;
     }
 
+    if matches!(ui.mode, UiMode::RoomConfirm { .. }) {
+        if let Some(action) = confirm_action_from_mouse(mouse, area) {
+            return handle_confirm_action(action, ui);
+        }
+        return Ok(false);
+    }
+
+    if matches!(ui.mode, UiMode::RoomCreateDialog) {
+        if let Some(action) = create_dialog_action_from_mouse(mouse, area) {
+            return handle_create_dialog_mouse(action, ui);
+        }
+        return Ok(false);
+    }
+
+    if matches!(ui.mode, UiMode::RoomCreateDialog) {
+        if let Some(action) = create_dialog_action_from_mouse(mouse, area) {
+            return handle_create_dialog_mouse(action, ui);
+        }
+        return Ok(false);
+    }
+
+    if matches!(ui.mode, UiMode::Lobby | UiMode::JoinRoomInput) {
+        handle_lobby_mouse(mouse, layout, ui);
+        return Ok(false);
+    }
+
     if rect_contains(layout.board, mouse.column, mouse.row) {
         if let Some(pos) = board_position_from_mouse(mouse, layout.board) {
             ui.cursor = pos;
             ui.menu = build_cell_menu(game, ui, layout, pos);
         }
         return Ok(false);
+    }
+
+    if rect_contains(layout.status, mouse.column, mouse.row) {
+        if status_action_from_mouse(mouse, layout.status) {
+            ui.mode = UiMode::RoomConfirm {
+                action: crate::ui::state::RoomConfirmAction::Leave,
+            };
+            ui.confirm_message = ui.i18n.text("confirm-leave");
+            return Ok(false);
+        }
     }
 
     if rect_contains(layout.left_panel, mouse.column, mouse.row)
@@ -77,6 +118,204 @@ pub fn handle_mouse(
     Ok(false)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmAction {
+    Yes,
+    No,
+}
+
+fn handle_confirm_action(action: ConfirmAction, ui: &mut UiState) -> io::Result<bool> {
+    if action == ConfirmAction::Yes {
+        if let UiMode::RoomConfirm { action } = ui.mode {
+            match action {
+                crate::ui::state::RoomConfirmAction::JoinSelected => {
+                    if !ui.room_id_input.is_empty() {
+                        if let Some(sender) = &ui.op_sender {
+                            let _ = sender.send(format!("OP ROOM JOIN {}", ui.room_id_input));
+                        }
+                    } else if let Some(room) = ui.rooms.get(ui.selected_room) {
+                        if let Some(id) = &room.id {
+                            if let Some(sender) = &ui.op_sender {
+                                let _ = sender.send(format!("OP ROOM JOIN {}", id));
+                            }
+                        }
+                    }
+                }
+                crate::ui::state::RoomConfirmAction::Create => {
+                    if let Some(sender) = &ui.op_sender {
+                        let name = if ui.room_input.is_empty() {
+                            ui.i18n.text("msg-room-default")
+                        } else {
+                            ui.room_input.clone()
+                        };
+                        let id = if ui.room_id_input.is_empty() {
+                            "-".to_string()
+                        } else {
+                            ui.room_id_input.clone()
+                        };
+                        let auto = if ui.auto_join { 1 } else { 0 };
+                        let show = if ui.show_room_id { 1 } else { 0 };
+                        let _ = sender
+                            .send(format!("OP ROOM CREATE {} {} {} {}", name, id, auto, show));
+                    }
+                }
+                crate::ui::state::RoomConfirmAction::Leave => {
+                    if let Some(sender) = &ui.op_sender {
+                        let _ = sender.send("OP ROOM LEAVE".to_string());
+                    }
+                }
+            }
+        }
+    }
+    ui.mode = UiMode::Lobby;
+    Ok(false)
+}
+
+fn confirm_action_from_mouse(
+    mouse: MouseEvent,
+    area: ratatui::layout::Rect,
+) -> Option<ConfirmAction> {
+    let dialog = confirm_rect(area);
+    if !rect_contains(dialog, mouse.column, mouse.row) {
+        return None;
+    }
+    let inner = ratatui::layout::Rect::new(
+        dialog.x + 1,
+        dialog.y + 1,
+        dialog.width.saturating_sub(2),
+        dialog.height.saturating_sub(2),
+    );
+    let yes_rect = ratatui::layout::Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width / 2,
+        1,
+    );
+    let no_rect = ratatui::layout::Rect::new(
+        inner.x + inner.width / 2,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width - inner.width / 2,
+        1,
+    );
+    if rect_contains(yes_rect, mouse.column, mouse.row) {
+        Some(ConfirmAction::Yes)
+    } else if rect_contains(no_rect, mouse.column, mouse.row) {
+        Some(ConfirmAction::No)
+    } else {
+        None
+    }
+}
+
+fn confirm_rect(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Length(7),
+            Constraint::Percentage(35),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(vertical[1]);
+    horizontal[1]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateDialogAction {
+    Focus(crate::ui::state::CreateFocus),
+    Confirm,
+    Cancel,
+}
+
+fn create_dialog_action_from_mouse(
+    mouse: MouseEvent,
+    area: ratatui::layout::Rect,
+) -> Option<CreateDialogAction> {
+    let dialog = confirm_rect(area);
+    if !rect_contains(dialog, mouse.column, mouse.row) {
+        return None;
+    }
+    let inner = ratatui::layout::Rect::new(
+        dialog.x + 1,
+        dialog.y + 1,
+        dialog.width.saturating_sub(2),
+        dialog.height.saturating_sub(2),
+    );
+    let line = mouse.row.saturating_sub(inner.y) as usize;
+    match line {
+        2 => Some(CreateDialogAction::Focus(
+            crate::ui::state::CreateFocus::Name,
+        )),
+        3 => Some(CreateDialogAction::Focus(crate::ui::state::CreateFocus::Id)),
+        4 => Some(CreateDialogAction::Focus(
+            crate::ui::state::CreateFocus::AutoJoin,
+        )),
+        5 => Some(CreateDialogAction::Focus(
+            crate::ui::state::CreateFocus::ShowId,
+        )),
+        7 => {
+            let mid = inner.x + inner.width / 2;
+            if mouse.column < mid {
+                Some(CreateDialogAction::Confirm)
+            } else {
+                Some(CreateDialogAction::Cancel)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn handle_create_dialog_mouse(action: CreateDialogAction, ui: &mut UiState) -> io::Result<bool> {
+    match action {
+        CreateDialogAction::Focus(focus) => {
+            ui.create_focus = focus;
+            if matches!(focus, crate::ui::state::CreateFocus::AutoJoin) {
+                ui.auto_join = !ui.auto_join;
+            }
+            if matches!(focus, crate::ui::state::CreateFocus::ShowId) {
+                ui.show_room_id = !ui.show_room_id;
+            }
+        }
+        CreateDialogAction::Confirm => {
+            ui.mode = UiMode::RoomConfirm {
+                action: crate::ui::state::RoomConfirmAction::Create,
+            };
+            ui.confirm_message = ui.i18n.text("confirm-create");
+        }
+        CreateDialogAction::Cancel => {
+            ui.mode = UiMode::Lobby;
+        }
+    }
+    Ok(false)
+}
+
+fn handle_lobby_mouse(mouse: MouseEvent, layout: crate::ui::layout::LayoutInfo, ui: &mut UiState) {
+    if !rect_contains(layout.body, mouse.column, mouse.row) {
+        return;
+    }
+    let inner = ratatui::layout::Rect::new(
+        layout.body.x + 1,
+        layout.body.y + 1,
+        layout.body.width.saturating_sub(2),
+        layout.body.height.saturating_sub(2),
+    );
+    let line = mouse.row.saturating_sub(inner.y) as usize;
+    if line >= 2 && line < 2 + ui.rooms.len() {
+        ui.selected_room = line - 2;
+        ui.mode = UiMode::RoomConfirm {
+            action: crate::ui::state::RoomConfirmAction::JoinSelected,
+        };
+        ui.confirm_message = ui.i18n.text("confirm-join");
+    }
+}
+
 fn handle_setup_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
     let phase_before = game.phase;
 
@@ -86,13 +325,20 @@ fn handle_setup_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
             KeyCode::Char('l') | KeyCode::Char('L') => {
                 match game.place_setup_card(player, ui.cursor, OnlineCardType::Link) {
                     Ok(()) => {
-                        ui.message = "Placed Link".to_string();
+                        ui.message = ui.i18n.text("msg-place-link");
                         if let Some(sender) = &ui.op_sender {
                             let _ = sender
                                 .send(format!("OP SETUP L {} {}", ui.cursor.row, ui.cursor.col));
                         }
                     }
-                    Err(err) => ui.message = format!("Setup error: {:?}", err),
+                    Err(err) => {
+                        ui.message = ui.i18n.text_args(
+                            "msg-setup-error",
+                            Some(crate::i18n::args_from_map(
+                                [("error", format!("{:?}", err))].into_iter().collect(),
+                            )),
+                        );
+                    }
                 }
                 apply_phase_transition(phase_before, game, ui);
                 return;
@@ -100,13 +346,20 @@ fn handle_setup_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
             KeyCode::Char('v') | KeyCode::Char('V') => {
                 match game.place_setup_card(player, ui.cursor, OnlineCardType::Virus) {
                     Ok(()) => {
-                        ui.message = "Placed Virus".to_string();
+                        ui.message = ui.i18n.text("msg-place-virus");
                         if let Some(sender) = &ui.op_sender {
                             let _ = sender
                                 .send(format!("OP SETUP V {} {}", ui.cursor.row, ui.cursor.col));
                         }
                     }
-                    Err(err) => ui.message = format!("Setup error: {:?}", err),
+                    Err(err) => {
+                        ui.message = ui.i18n.text_args(
+                            "msg-setup-error",
+                            Some(crate::i18n::args_from_map(
+                                [("error", format!("{:?}", err))].into_iter().collect(),
+                            )),
+                        );
+                    }
                 }
                 apply_phase_transition(phase_before, game, ui);
                 return;
@@ -114,13 +367,20 @@ fn handle_setup_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
             KeyCode::Backspace => {
                 match game.remove_setup_card(player, ui.cursor) {
                     Ok(()) => {
-                        ui.message = "Removed card".to_string();
+                        ui.message = ui.i18n.text("msg-remove-card");
                         if let Some(sender) = &ui.op_sender {
                             let _ = sender
                                 .send(format!("OP REMOVE {} {}", ui.cursor.row, ui.cursor.col));
                         }
                     }
-                    Err(err) => ui.message = format!("Setup error: {:?}", err),
+                    Err(err) => {
+                        ui.message = ui.i18n.text_args(
+                            "msg-setup-error",
+                            Some(crate::i18n::args_from_map(
+                                [("error", format!("{:?}", err))].into_iter().collect(),
+                            )),
+                        );
+                    }
                 }
                 apply_phase_transition(phase_before, game, ui);
                 return;
@@ -133,21 +393,220 @@ fn handle_setup_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
     handle_cursor_keys(key, &mut ui.cursor);
 }
 
+fn handle_lobby_keys(key: KeyEvent, ui: &mut UiState) {
+    match key.code {
+        KeyCode::Up => {
+            if ui.selected_room > 0 {
+                ui.selected_room -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if ui.selected_room + 1 < ui.rooms.len() {
+                ui.selected_room += 1;
+            }
+        }
+        KeyCode::Char('l') | KeyCode::Char('L') => {
+            if let Some(sender) = &ui.op_sender {
+                let _ = sender.send("OP ROOM LIST".to_string());
+            }
+        }
+        KeyCode::Char('a') | KeyCode::Char('A') => {
+            if let Some(sender) = &ui.op_sender {
+                let _ = sender.send("OP ROOM AUTO".to_string());
+            }
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') => {
+            ui.room_input.clear();
+            ui.room_id_input.clear();
+            ui.mode = UiMode::RoomCreateDialog;
+            ui.create_focus = crate::ui::state::CreateFocus::Name;
+            ui.message = ui.i18n.text("msg-create-room");
+        }
+        KeyCode::Char('j') | KeyCode::Char('J') => {
+            ui.room_id_input.clear();
+            ui.mode = UiMode::JoinRoomInput;
+            ui.message = ui.i18n.text("msg-join-room");
+        }
+        KeyCode::Char('t') | KeyCode::Char('T') => {
+            ui.auto_join = !ui.auto_join;
+            ui.message = ui.i18n.text_args(
+                "msg-auto-join-toggle",
+                Some(crate::i18n::args_from_map(
+                    [(
+                        "state",
+                        ui.i18n.text(if ui.auto_join {
+                            "msg-auto-on"
+                        } else {
+                            "msg-auto-off"
+                        }),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
+            );
+        }
+        KeyCode::Char('i') | KeyCode::Char('I') => {
+            ui.show_room_id = !ui.show_room_id;
+            ui.message = ui.i18n.text_args(
+                "msg-show-id-toggle",
+                Some(crate::i18n::args_from_map(
+                    [(
+                        "state",
+                        ui.i18n.text(if ui.show_room_id {
+                            "msg-show-on"
+                        } else {
+                            "msg-show-off"
+                        }),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
+            );
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            if let Some(room) = ui.rooms.get(ui.selected_room) {
+                if let Some(id) = &room.id {
+                    if let Some(sender) = &ui.op_sender {
+                        let _ = sender.send(format!("OP ROOM SPECTATE {}", id));
+                    }
+                }
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(room) = ui.rooms.get(ui.selected_room) {
+                if room.id.is_some() {
+                    ui.mode = UiMode::RoomConfirm {
+                        action: crate::ui::state::RoomConfirmAction::JoinSelected,
+                    };
+                    ui.confirm_message = ui.i18n.text("confirm-join");
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_join_room_input(key: KeyEvent, ui: &mut UiState) {
+    match key.code {
+        KeyCode::Esc => {
+            ui.mode = UiMode::Lobby;
+            ui.message = ui.i18n.text("msg-lobby");
+        }
+        KeyCode::Backspace => {
+            if ui.message == ui.i18n.text("msg-join-room") {
+                ui.room_id_input.pop();
+            } else {
+                ui.room_input.pop();
+            }
+        }
+        KeyCode::Enter => {
+            if ui.message == ui.i18n.text("msg-create-room") {
+                ui.mode = UiMode::RoomCreateDialog;
+                ui.create_focus = crate::ui::state::CreateFocus::Name;
+            } else {
+                ui.mode = UiMode::RoomConfirm {
+                    action: crate::ui::state::RoomConfirmAction::JoinSelected,
+                };
+                ui.confirm_message = ui.i18n.text("confirm-join");
+            }
+        }
+        KeyCode::Char(ch) => {
+            if !ch.is_control() {
+                if ui.message == ui.i18n.text("msg-join-room") {
+                    ui.room_id_input.push(ch);
+                } else {
+                    ui.room_input.push(ch);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_create_dialog_key(key: KeyEvent, ui: &mut UiState) -> io::Result<bool> {
+    use crate::ui::state::CreateFocus;
+    match key.code {
+        KeyCode::Tab => {
+            ui.create_focus = match ui.create_focus {
+                CreateFocus::Name => CreateFocus::Id,
+                CreateFocus::Id => CreateFocus::AutoJoin,
+                CreateFocus::AutoJoin => CreateFocus::ShowId,
+                CreateFocus::ShowId => CreateFocus::Confirm,
+                CreateFocus::Confirm => CreateFocus::Cancel,
+                CreateFocus::Cancel => CreateFocus::Name,
+            };
+        }
+        KeyCode::Esc => {
+            ui.mode = UiMode::Lobby;
+            return Ok(false);
+        }
+        KeyCode::Enter => match ui.create_focus {
+            CreateFocus::Confirm => {
+                ui.mode = UiMode::RoomConfirm {
+                    action: crate::ui::state::RoomConfirmAction::Create,
+                };
+                ui.confirm_message = ui.i18n.text("confirm-create");
+            }
+            CreateFocus::Cancel => {
+                ui.mode = UiMode::Lobby;
+            }
+            _ => {}
+        },
+        KeyCode::Char(' ') => match ui.create_focus {
+            CreateFocus::AutoJoin => ui.auto_join = !ui.auto_join,
+            CreateFocus::ShowId => ui.show_room_id = !ui.show_room_id,
+            _ => {}
+        },
+        KeyCode::Backspace => match ui.create_focus {
+            CreateFocus::Name => {
+                ui.room_input.pop();
+            }
+            CreateFocus::Id => {
+                ui.room_id_input.pop();
+            }
+            _ => {}
+        },
+        KeyCode::Char(ch) => {
+            if !ch.is_control() {
+                match ui.create_focus {
+                    CreateFocus::Name => ui.room_input.push(ch),
+                    CreateFocus::Id => ui.room_id_input.push(ch),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 fn apply_phase_transition(phase_before: GamePhase, game: &GameState, ui: &mut UiState) {
     if phase_before != game.phase {
         ui.mode = UiMode::TurnPass;
         ui.message = match game.phase {
-            GamePhase::Setup(player) => format!(
-                "Pass to {} for setup. Press Enter.",
-                player_label_with_names(player, &ui.player_names)
+            GamePhase::Setup(player) => ui.i18n.text_args(
+                "msg-pass-setup",
+                Some(crate::i18n::args_from_map(
+                    [(
+                        "player",
+                        player_label_with_names(&ui.i18n, player, &ui.player_names),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
             ),
-            GamePhase::Playing => "Setup complete. Press Enter to start.".to_string(),
-            GamePhase::GameOver(winner) => {
-                format!(
-                    "Game Over. Winner: {}",
-                    player_label_with_names(winner, &ui.player_names)
-                )
-            }
+            GamePhase::Playing => ui.i18n.text("msg-setup-complete"),
+            GamePhase::GameOver(winner) => ui.i18n.text_args(
+                "msg-game-over",
+                Some(crate::i18n::args_from_map(
+                    [(
+                        "player",
+                        player_label_with_names(&ui.i18n, winner, &ui.player_names),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
+            ),
         };
     }
 }
@@ -188,13 +647,27 @@ fn handle_key_inner(key: KeyEvent, game: &mut GameState, ui: &mut UiState) -> io
         return Ok(true);
     }
 
-    if key.code == KeyCode::Char('?') {
+    if key.code == KeyCode::Char('h') || key.code == KeyCode::Char('H') {
         ui.message = help_text(game, ui);
         ui.menu = None;
         return Ok(false);
     }
 
     match ui.mode {
+        UiMode::Lobby => handle_lobby_keys(key, ui),
+        UiMode::JoinRoomInput => handle_join_room_input(key, ui),
+        UiMode::RoomConfirm { .. } => match key.code {
+            KeyCode::Enter => {
+                return handle_confirm_action(ConfirmAction::Yes, ui);
+            }
+            KeyCode::Esc => {
+                return handle_confirm_action(ConfirmAction::No, ui);
+            }
+            _ => {}
+        },
+        UiMode::RoomCreateDialog => {
+            return handle_create_dialog_key(key, ui);
+        }
         UiMode::GameOver => {
             if key.code == KeyCode::Enter {
                 return Ok(true);
@@ -205,23 +678,48 @@ fn handle_key_inner(key: KeyEvent, game: &mut GameState, ui: &mut UiState) -> io
                 GamePhase::Setup(player) => {
                     ui.mode = UiMode::Setup;
                     ui.cursor = player.setup_positions()[0];
-                    ui.message = format!(
-                        "{} setup: place 4 Link and 4 Virus on highlighted cells",
-                        player_label_with_names(player, &ui.player_names)
+                    ui.message = ui.i18n.text_args(
+                        "msg-setup-instructions",
+                        Some(crate::i18n::args_from_map(
+                            [(
+                                "player",
+                                player_label_with_names(&ui.i18n, player, &ui.player_names),
+                            )]
+                            .into_iter()
+                            .collect(),
+                        )),
                     );
                 }
                 GamePhase::Playing => {
                     ui.mode = UiMode::MoveSelect;
-                    ui.message = format!(
-                        "{} turn: select a card to move",
-                        player_label_with_names(game.current_player, &ui.player_names)
+                    ui.message = ui.i18n.text_args(
+                        "msg-turn-select",
+                        Some(crate::i18n::args_from_map(
+                            [(
+                                "player",
+                                player_label_with_names(
+                                    &ui.i18n,
+                                    game.current_player,
+                                    &ui.player_names,
+                                ),
+                            )]
+                            .into_iter()
+                            .collect(),
+                        )),
                     );
                 }
                 GamePhase::GameOver(winner) => {
                     ui.mode = UiMode::GameOver;
-                    ui.message = format!(
-                        "Game Over. Winner: {}",
-                        player_label_with_names(winner, &ui.player_names)
+                    ui.message = ui.i18n.text_args(
+                        "msg-game-over",
+                        Some(crate::i18n::args_from_map(
+                            [(
+                                "player",
+                                player_label_with_names(&ui.i18n, winner, &ui.player_names),
+                            )]
+                            .into_iter()
+                            .collect(),
+                        )),
                     );
                 }
             },
@@ -286,16 +784,16 @@ fn build_cell_menu(
                 && game.can_place_setup(game.current_player, pos)
             {
                 items.push(MenuItem {
-                    label: "L: Place Link".to_string(),
+                    label: ui.i18n.text("menu-place-link"),
                     action: MenuAction::Key(KeyCode::Char('l')),
                 });
                 items.push(MenuItem {
-                    label: "V: Place Virus".to_string(),
+                    label: ui.i18n.text("menu-place-virus"),
                     action: MenuAction::Key(KeyCode::Char('v')),
                 });
             } else if game.board.cards[pos.row][pos.col].is_some() {
                 items.push(MenuItem {
-                    label: "Backspace: Remove".to_string(),
+                    label: ui.i18n.text("menu-remove"),
                     action: MenuAction::Key(KeyCode::Backspace),
                 });
             }
@@ -304,35 +802,35 @@ fn build_cell_menu(
             if let Some(card) = game.board.cards[pos.row][pos.col] {
                 if card.owner == game.current_player {
                     items.push(MenuItem {
-                        label: "Enter: Select".to_string(),
+                        label: ui.i18n.text("menu-select"),
                         action: MenuAction::Key(KeyCode::Enter),
                     });
                     if crate::GameState::exit_owner(pos) == Some(game.current_player.opponent()) {
                         items.push(MenuItem {
-                            label: "E: Enter Server".to_string(),
+                            label: ui.i18n.text("menu-enter-server"),
                             action: MenuAction::Key(KeyCode::Char('e')),
                         });
                     }
                 }
             }
             items.push(MenuItem {
-                label: "T: Terminal".to_string(),
+                label: ui.i18n.text("menu-terminal"),
                 action: MenuAction::Key(KeyCode::Char('t')),
             });
         }
         UiMode::MoveDest { .. } => {
             items.push(MenuItem {
-                label: "Enter: Move".to_string(),
+                label: ui.i18n.text("menu-move"),
                 action: MenuAction::Key(KeyCode::Enter),
             });
         }
         UiMode::BoostContinue { .. } => {
             items.push(MenuItem {
-                label: "Enter: Boost Move".to_string(),
+                label: ui.i18n.text("menu-boost-move"),
                 action: MenuAction::Key(KeyCode::Enter),
             });
             items.push(MenuItem {
-                label: "N: End Turn".to_string(),
+                label: ui.i18n.text("menu-end-turn"),
                 action: MenuAction::Key(KeyCode::Char('n')),
             });
         }
@@ -342,37 +840,37 @@ fn build_cell_menu(
         | UiMode::NotFoundFirst
         | UiMode::NotFoundSecond { .. } => {
             items.push(MenuItem {
-                label: "Enter: Apply".to_string(),
+                label: ui.i18n.text("menu-apply"),
                 action: MenuAction::Key(KeyCode::Enter),
             });
         }
         UiMode::NotFoundSwap { .. } => {
             items.push(MenuItem {
-                label: "Y: Swap".to_string(),
+                label: ui.i18n.text("menu-swap"),
                 action: MenuAction::Key(KeyCode::Char('y')),
             });
             items.push(MenuItem {
-                label: "N: Keep".to_string(),
+                label: ui.i18n.text("menu-keep"),
                 action: MenuAction::Key(KeyCode::Char('n')),
             });
         }
         UiMode::ServerReveal { .. } => {
             items.push(MenuItem {
-                label: "Y: Reveal".to_string(),
+                label: ui.i18n.text("menu-reveal"),
                 action: MenuAction::Key(KeyCode::Char('y')),
             });
             items.push(MenuItem {
-                label: "N: Hide".to_string(),
+                label: ui.i18n.text("menu-hide"),
                 action: MenuAction::Key(KeyCode::Char('n')),
             });
         }
         UiMode::ServerStack { .. } => {
             items.push(MenuItem {
-                label: "L: Link Stack".to_string(),
+                label: ui.i18n.text("menu-link-stack"),
                 action: MenuAction::Key(KeyCode::Char('l')),
             });
             items.push(MenuItem {
-                label: "V: Virus Stack".to_string(),
+                label: ui.i18n.text("menu-virus-stack"),
                 action: MenuAction::Key(KeyCode::Char('v')),
             });
         }
@@ -443,6 +941,29 @@ fn menu_action_at(menu: &ActionMenu, column: u16, row: u16) -> Option<MenuAction
     menu.items.get(index).map(|item| item.action.clone())
 }
 
+fn status_action_from_mouse(mouse: MouseEvent, status: ratatui::layout::Rect) -> bool {
+    if !rect_contains(status, mouse.column, mouse.row) {
+        return false;
+    }
+    let inner = ratatui::layout::Rect::new(
+        status.x + 1,
+        status.y + 1,
+        status.width.saturating_sub(2),
+        status.height.saturating_sub(2),
+    );
+    let button_width = 10u16;
+    let button_x = inner
+        .x
+        .saturating_add(inner.width.saturating_sub(button_width));
+    let button_rect = ratatui::layout::Rect::new(
+        button_x,
+        inner.y + inner.height.saturating_sub(1),
+        button_width,
+        1,
+    );
+    rect_contains(button_rect, mouse.column, mouse.row)
+}
+
 fn handle_move_select_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
     handle_cursor_keys(key, &mut ui.cursor);
     match key.code {
@@ -450,17 +971,17 @@ fn handle_move_select_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState
             if let Some(card) = game.board.cards[ui.cursor.row][ui.cursor.col] {
                 if card.owner == game.current_player {
                     ui.mode = UiMode::MoveDest { from: ui.cursor };
-                    ui.message = "Select destination".to_string();
+                    ui.message = ui.i18n.text("msg-select-dest");
                 } else {
-                    ui.message = "Not your card".to_string();
+                    ui.message = ui.i18n.text("msg-not-your-card");
                 }
             } else {
-                ui.message = "No card here".to_string();
+                ui.message = ui.i18n.text("msg-no-card");
             }
         }
         KeyCode::Char('t') | KeyCode::Char('T') => {
             ui.mode = UiMode::TerminalMenu;
-            ui.message = "Terminal: 1 LineBoost, 2 VirusCheck, 3 Firewall, 4 404".to_string();
+            ui.message = ui.i18n.text("msg-terminal-open");
         }
         KeyCode::Char('e') | KeyCode::Char('E') => {
             if let Some(card) = game.board.cards[ui.cursor.row][ui.cursor.col] {
@@ -469,12 +990,12 @@ fn handle_move_select_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState
                         == Some(game.current_player.opponent())
                 {
                     ui.mode = UiMode::ServerReveal { from: ui.cursor };
-                    ui.message = "Enter server: reveal? (Y/N)".to_string();
+                    ui.message = ui.i18n.text("msg-enter-server");
                 } else {
-                    ui.message = "Not on opponent exit".to_string();
+                    ui.message = ui.i18n.text("msg-not-on-exit");
                 }
             } else {
-                ui.message = "No card here".to_string();
+                ui.message = ui.i18n.text("msg-no-card");
             }
         }
         _ => {}
@@ -494,7 +1015,7 @@ fn handle_move_dest_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState, 
                         ));
                     }
                     ui.mode = UiMode::BoostContinue { from: ui.cursor };
-                    ui.message = "Boost: move again or press N to end".to_string();
+                    ui.message = ui.i18n.text("msg-boost-again");
                 }
                 crate::MoveOutcome::TurnEnds => {
                     if let Some(sender) = &ui.op_sender {
@@ -506,11 +1027,18 @@ fn handle_move_dest_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState, 
                     end_turn(game, ui)
                 }
             },
-            Err(err) => ui.message = format!("Move error: {:?}", err),
+            Err(err) => {
+                ui.message = ui.i18n.text_args(
+                    "msg-move-error",
+                    Some(crate::i18n::args_from_map(
+                        [("error", format!("{:?}", err))].into_iter().collect(),
+                    )),
+                );
+            }
         },
         KeyCode::Esc => {
             ui.mode = UiMode::MoveSelect;
-            ui.message = "Select a card".to_string();
+            ui.message = ui.i18n.text("msg-select-card");
         }
         _ => {}
     }
@@ -534,7 +1062,14 @@ fn handle_boost_continue_keys(
                 }
                 end_turn(game, ui)
             }
-            Err(err) => ui.message = format!("Boost move error: {:?}", err),
+            Err(err) => {
+                ui.message = ui.i18n.text_args(
+                    "msg-boost-error",
+                    Some(crate::i18n::args_from_map(
+                        [("error", format!("{:?}", err))].into_iter().collect(),
+                    )),
+                );
+            }
         },
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             if let Some(sender) = &ui.op_sender {
@@ -550,23 +1085,23 @@ fn handle_terminal_menu_keys(_key: KeyEvent, _game: &mut GameState, ui: &mut UiS
     match _key.code {
         KeyCode::Char('1') => {
             ui.mode = UiMode::LineBoost;
-            ui.message = "LineBoost: select your card (Enter to attach/detach)".to_string();
+            ui.message = ui.i18n.text("msg-lineboost-select");
         }
         KeyCode::Char('2') => {
             ui.mode = UiMode::VirusCheck;
-            ui.message = "VirusCheck: select opponent unrevealed card".to_string();
+            ui.message = ui.i18n.text("msg-viruscheck-select");
         }
         KeyCode::Char('3') => {
             ui.mode = UiMode::Firewall;
-            ui.message = "Firewall: select cell (Enter to place/remove)".to_string();
+            ui.message = ui.i18n.text("msg-firewall-select");
         }
         KeyCode::Char('4') => {
             ui.mode = UiMode::NotFoundFirst;
-            ui.message = "404: select first own card".to_string();
+            ui.message = ui.i18n.text("msg-404-first");
         }
         KeyCode::Esc => {
             ui.mode = UiMode::MoveSelect;
-            ui.message = "Select a card".to_string();
+            ui.message = ui.i18n.text("msg-select-card");
         }
         _ => {}
     }
@@ -577,7 +1112,7 @@ fn handle_line_boost_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState)
     if key.code == KeyCode::Enter {
         if let Some(card) = game.board.cards[ui.cursor.row][ui.cursor.col] {
             if card.owner != game.current_player {
-                ui.message = "Not your card".to_string();
+                ui.message = ui.i18n.text("msg-not-your-card");
                 return;
             }
             if card.line_boost_attached {
@@ -592,10 +1127,17 @@ fn handle_line_boost_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState)
                             }
                             end_turn(game, ui)
                         }
-                        Err(err) => ui.message = format!("LineBoost error: {:?}", err),
+                        Err(err) => {
+                            ui.message = ui.i18n.text_args(
+                                "msg-lineboost-error",
+                                Some(crate::i18n::args_from_map(
+                                    [("error", format!("{:?}", err))].into_iter().collect(),
+                                )),
+                            );
+                        }
                     }
                 } else {
-                    ui.message = "No line boost found".to_string();
+                    ui.message = ui.i18n.text("msg-lineboost-none");
                 }
             } else if let Some(index) = first_free_line_boost(game) {
                 match game.use_line_boost_attach(index, ui.cursor) {
@@ -608,17 +1150,24 @@ fn handle_line_boost_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState)
                         }
                         end_turn(game, ui)
                     }
-                    Err(err) => ui.message = format!("LineBoost error: {:?}", err),
+                    Err(err) => {
+                        ui.message = ui.i18n.text_args(
+                            "msg-lineboost-error",
+                            Some(crate::i18n::args_from_map(
+                                [("error", format!("{:?}", err))].into_iter().collect(),
+                            )),
+                        );
+                    }
                 }
             } else {
-                ui.message = "No line boost slot free".to_string();
+                ui.message = ui.i18n.text("msg-lineboost-slot-full");
             }
         } else {
-            ui.message = "No card here".to_string();
+            ui.message = ui.i18n.text("msg-no-card");
         }
     } else if key.code == KeyCode::Esc {
         ui.mode = UiMode::MoveSelect;
-        ui.message = "Select a card".to_string();
+        ui.message = ui.i18n.text("msg-select-card");
     }
 }
 
@@ -627,11 +1176,11 @@ fn handle_virus_check_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState
     if key.code == KeyCode::Enter {
         if let Some(card) = game.board.cards[ui.cursor.row][ui.cursor.col] {
             if card.owner == game.current_player {
-                ui.message = "Select opponent card".to_string();
+                ui.message = ui.i18n.text("msg-opponent-card");
                 return;
             }
             if card.revealed {
-                ui.message = "Card already revealed".to_string();
+                ui.message = ui.i18n.text("msg-card-revealed");
                 return;
             }
             if let Some(index) = first_unused_virus_check(game) {
@@ -643,17 +1192,24 @@ fn handle_virus_check_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState
                         }
                         end_turn(game, ui)
                     }
-                    Err(err) => ui.message = format!("VirusCheck error: {:?}", err),
+                    Err(err) => {
+                        ui.message = ui.i18n.text_args(
+                            "msg-viruscheck-error",
+                            Some(crate::i18n::args_from_map(
+                                [("error", format!("{:?}", err))].into_iter().collect(),
+                            )),
+                        );
+                    }
                 }
             } else {
-                ui.message = "VirusCheck used up".to_string();
+                ui.message = ui.i18n.text("msg-viruscheck-used");
             }
         } else {
-            ui.message = "No card here".to_string();
+            ui.message = ui.i18n.text("msg-no-card");
         }
     } else if key.code == KeyCode::Esc {
         ui.mode = UiMode::MoveSelect;
-        ui.message = "Select a card".to_string();
+        ui.message = ui.i18n.text("msg-select-card");
     }
 }
 
@@ -672,10 +1228,17 @@ fn handle_firewall_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
                         }
                         end_turn(game, ui)
                     }
-                    Err(err) => ui.message = format!("Firewall error: {:?}", err),
+                    Err(err) => {
+                        ui.message = ui.i18n.text_args(
+                            "msg-firewall-error",
+                            Some(crate::i18n::args_from_map(
+                                [("error", format!("{:?}", err))].into_iter().collect(),
+                            )),
+                        );
+                    }
                 }
             } else {
-                ui.message = "No firewall found".to_string();
+                ui.message = ui.i18n.text("msg-firewall-none");
             }
         } else if let Some(index) = first_free_firewall(game) {
             match game.use_firewall_place(index, ui.cursor) {
@@ -688,14 +1251,21 @@ fn handle_firewall_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiState) {
                     }
                     end_turn(game, ui)
                 }
-                Err(err) => ui.message = format!("Firewall error: {:?}", err),
+                Err(err) => {
+                    ui.message = ui.i18n.text_args(
+                        "msg-firewall-error",
+                        Some(crate::i18n::args_from_map(
+                            [("error", format!("{:?}", err))].into_iter().collect(),
+                        )),
+                    );
+                }
             }
         } else {
-            ui.message = "No firewall slot free".to_string();
+            ui.message = ui.i18n.text("msg-firewall-slot-full");
         }
     } else if key.code == KeyCode::Esc {
         ui.mode = UiMode::MoveSelect;
-        ui.message = "Select a card".to_string();
+        ui.message = ui.i18n.text("msg-select-card");
     }
 }
 
@@ -704,17 +1274,17 @@ fn handle_not_found_first_keys(key: KeyEvent, game: &mut GameState, ui: &mut UiS
     if key.code == KeyCode::Enter {
         if let Some(card) = game.board.cards[ui.cursor.row][ui.cursor.col] {
             if card.owner != game.current_player {
-                ui.message = "Select your own card".to_string();
+                ui.message = ui.i18n.text("msg-own-card");
                 return;
             }
             ui.mode = UiMode::NotFoundSecond { first: ui.cursor };
-            ui.message = "404: select second own card".to_string();
+            ui.message = ui.i18n.text("msg-404-second");
         } else {
-            ui.message = "No card here".to_string();
+            ui.message = ui.i18n.text("msg-no-card");
         }
     } else if key.code == KeyCode::Esc {
         ui.mode = UiMode::MoveSelect;
-        ui.message = "Select a card".to_string();
+        ui.message = ui.i18n.text("msg-select-card");
     }
 }
 
@@ -728,20 +1298,20 @@ fn handle_not_found_second_keys(
     if key.code == KeyCode::Enter {
         if let Some(card) = game.board.cards[ui.cursor.row][ui.cursor.col] {
             if card.owner != game.current_player {
-                ui.message = "Select your own card".to_string();
+                ui.message = ui.i18n.text("msg-own-card");
                 return;
             }
             ui.mode = UiMode::NotFoundSwap {
                 first,
                 second: ui.cursor,
             };
-            ui.message = "404: swap positions? (Y/N)".to_string();
+            ui.message = ui.i18n.text("msg-404-swap");
         } else {
-            ui.message = "No card here".to_string();
+            ui.message = ui.i18n.text("msg-no-card");
         }
     } else if key.code == KeyCode::Esc {
         ui.mode = UiMode::MoveSelect;
-        ui.message = "Select a card".to_string();
+        ui.message = ui.i18n.text("msg-select-card");
     }
 }
 
@@ -757,7 +1327,7 @@ fn handle_not_found_swap_keys(
         KeyCode::Char('n') | KeyCode::Char('N') => apply_not_found(game, ui, first, second, false),
         KeyCode::Esc => {
             ui.mode = UiMode::MoveSelect;
-            ui.message = "Select a card".to_string();
+            ui.message = ui.i18n.text("msg-select-card");
         }
         _ => {}
     }
@@ -772,18 +1342,18 @@ fn handle_server_reveal_keys(
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             ui.mode = UiMode::ServerStack { from, reveal: true };
-            ui.message = "Server: place into Link (L) or Virus (V) stack".to_string();
+            ui.message = ui.i18n.text("msg-server-stack");
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             ui.mode = UiMode::ServerStack {
                 from,
                 reveal: false,
             };
-            ui.message = "Server: place into Link (L) or Virus (V) stack".to_string();
+            ui.message = ui.i18n.text("msg-server-stack");
         }
         KeyCode::Esc => {
             ui.mode = UiMode::MoveSelect;
-            ui.message = "Select a card".to_string();
+            ui.message = ui.i18n.text("msg-select-card");
         }
         _ => {}
     }
@@ -809,7 +1379,14 @@ fn handle_server_stack_keys(
                     }
                     end_turn(game, ui)
                 }
-                Err(err) => ui.message = format!("Server entry error: {:?}", err),
+                Err(err) => {
+                    ui.message = ui.i18n.text_args(
+                        "msg-server-error",
+                        Some(crate::i18n::args_from_map(
+                            [("error", format!("{:?}", err))].into_iter().collect(),
+                        )),
+                    );
+                }
             }
         }
         KeyCode::Char('v') | KeyCode::Char('V') => {
@@ -824,12 +1401,19 @@ fn handle_server_stack_keys(
                     }
                     end_turn(game, ui)
                 }
-                Err(err) => ui.message = format!("Server entry error: {:?}", err),
+                Err(err) => {
+                    ui.message = ui.i18n.text_args(
+                        "msg-server-error",
+                        Some(crate::i18n::args_from_map(
+                            [("error", format!("{:?}", err))].into_iter().collect(),
+                        )),
+                    );
+                }
             }
         }
         KeyCode::Esc => {
             ui.mode = UiMode::MoveSelect;
-            ui.message = "Select a card".to_string();
+            ui.message = ui.i18n.text("msg-select-card");
         }
         _ => {}
     }
@@ -854,9 +1438,16 @@ fn apply_not_found(
                 }
                 end_turn(game, ui)
             }
-            Err(err) => ui.message = format!("404 error: {:?}", err),
+            Err(err) => {
+                ui.message = ui.i18n.text_args(
+                    "msg-404-error",
+                    Some(crate::i18n::args_from_map(
+                        [("error", format!("{:?}", err))].into_iter().collect(),
+                    )),
+                );
+            }
         }
     } else {
-        ui.message = "404 used up".to_string();
+        ui.message = ui.i18n.text("msg-404-used");
     }
 }

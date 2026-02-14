@@ -3,6 +3,10 @@ use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiMode {
+    Lobby,
+    JoinRoomInput,
+    RoomConfirm { action: RoomConfirmAction },
+    RoomCreateDialog,
     TurnPass,
     Setup,
     MoveSelect,
@@ -20,6 +24,23 @@ pub enum UiMode {
     GameOver,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomConfirmAction {
+    JoinSelected,
+    Create,
+    Leave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateFocus {
+    Name,
+    Id,
+    AutoJoin,
+    ShowId,
+    Confirm,
+    Cancel,
+}
+
 pub struct UiState {
     pub cursor: Position,
     pub mode: UiMode,
@@ -29,6 +50,19 @@ pub struct UiState {
     pub player_names: [String; 2],
     pub local_player: PlayerId,
     pub op_sender: Option<std::sync::mpsc::Sender<String>>,
+    pub rooms: Vec<crate::net::protocol::RoomInfo>,
+    pub selected_room: usize,
+    pub room_input: String,
+    pub auto_join: bool,
+    pub show_room_id: bool,
+    pub room_id_input: String,
+    pub is_spectator: bool,
+    pub client_id: String,
+    pub room_players: Vec<String>,
+    pub room_spectators: Vec<String>,
+    pub i18n: crate::i18n::I18n,
+    pub confirm_message: String,
+    pub create_focus: CreateFocus,
 }
 
 pub struct ActionMenu {

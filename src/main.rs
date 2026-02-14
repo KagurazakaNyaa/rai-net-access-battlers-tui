@@ -10,7 +10,10 @@ use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use rai_net_access_battlers_tui::net::client::{connect_client, ClientConfig, ClientEvent};
+use rai_net_access_battlers_tui::i18n::I18n;
+use rai_net_access_battlers_tui::net::client::{
+    connect_client, ClientConfig, ClientEvent, ClientRole,
+};
 use rai_net_access_battlers_tui::net::server::{run_server, ListenMode, ServerConfig};
 use rai_net_access_battlers_tui::ui::{draw, handle_key, handle_mouse, UiMode, UiState};
 use rai_net_access_battlers_tui::{GamePhase, GameState, PlayerId};
@@ -41,6 +44,10 @@ enum Command {
         unix: Option<String>,
         #[arg(long)]
         name: String,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        lang: Option<String>,
     },
 }
 
@@ -78,18 +85,32 @@ fn main() -> io::Result<()> {
                 listen_mode,
             }))
         }
-        Command::Client { tcp, unix, name } => run_client(tcp, unix, name),
+        Command::Client {
+            tcp,
+            unix,
+            name,
+            id,
+            lang,
+        } => run_client(tcp, unix, name, id, lang),
     }
 }
 
-fn run_client(tcp: Option<String>, unix: Option<String>, name: String) -> io::Result<()> {
+fn run_client(
+    tcp: Option<String>,
+    unix: Option<String>,
+    name: String,
+    id: Option<String>,
+    lang: Option<String>,
+) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    let client_id = id.unwrap_or_else(generate_random_client_id);
     let (state_rx, op_tx) = runtime.block_on(connect_client(ClientConfig {
         tcp_addr: tcp.or_else(|| Some("127.0.0.1:2321".to_string())),
         unix_path: unix,
         name,
+        client_id: client_id.clone(),
     }))?;
 
     enable_raw_mode()?;
@@ -104,7 +125,8 @@ fn run_client(tcp: Option<String>, unix: Option<String>, name: String) -> io::Re
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, state_rx, op_tx);
+    let i18n = I18n::load(lang.as_deref());
+    let result = run_app(&mut terminal, state_rx, op_tx, client_id, i18n);
 
     disable_raw_mode()?;
     execute!(
@@ -121,46 +143,94 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state_rx: std::sync::mpsc::Receiver<ClientEvent>,
     op_tx: std::sync::mpsc::Sender<String>,
+    client_id: String,
+    i18n: I18n,
 ) -> io::Result<()> {
     let mut game = GameState::new();
     let mut ui = UiState {
         cursor: PlayerId::P1.setup_positions()[0],
-        mode: UiMode::TurnPass,
-        message: "Waiting for server".to_string(),
+        mode: UiMode::Lobby,
+        message: i18n.text("status-waiting-server"),
         log: Vec::new(),
         menu: None,
         player_names: ["P1".to_string(), "P2".to_string()],
         local_player: PlayerId::P1,
         op_sender: Some(op_tx),
+        rooms: Vec::new(),
+        selected_room: 0,
+        room_input: String::new(),
+        auto_join: true,
+        show_room_id: true,
+        room_id_input: String::new(),
+        is_spectator: false,
+        client_id,
+        room_players: Vec::new(),
+        room_spectators: Vec::new(),
+        i18n,
+        confirm_message: String::new(),
+        create_focus: rai_net_access_battlers_tui::ui::CreateFocus::Name,
     };
 
     loop {
         while let Ok(event) = state_rx.try_recv() {
             match event {
-                ClientEvent::Assigned(player) => {
-                    ui.local_player = player;
+                ClientEvent::Assigned(role) => match role {
+                    ClientRole::Player(player) => {
+                        ui.local_player = player;
+                        ui.is_spectator = false;
+                    }
+                    ClientRole::Spectator => {
+                        ui.is_spectator = true;
+                    }
+                    ClientRole::Lobby => {
+                        ui.is_spectator = false;
+                    }
+                },
+                ClientEvent::Rooms(rooms) => {
+                    ui.rooms = rooms;
+                    if ui.selected_room >= ui.rooms.len() {
+                        ui.selected_room = ui.rooms.len().saturating_sub(1);
+                    }
+                }
+                ClientEvent::RoomPlayers(players) => {
+                    ui.room_players = players;
+                }
+                ClientEvent::RoomSpectators(spectators) => {
+                    ui.room_spectators = spectators;
+                }
+                ClientEvent::Error(message) => {
+                    ui.message = ui.i18n.text_args(
+                        "status-error",
+                        Some(rai_net_access_battlers_tui::i18n::args_from_map(
+                            [("message", message)].into_iter().collect(),
+                        )),
+                    );
                 }
                 ClientEvent::State(state, names) => {
                     game = state;
                     ui.player_names = names;
-                    ui.mode = match game.phase {
-                        GamePhase::Setup(player) => {
-                            if player == ui.local_player {
-                                ui.cursor = player.setup_positions()[0];
-                                UiMode::Setup
-                            } else {
-                                UiMode::TurnPass
+                    if !ui.is_spectator {
+                        ui.mode = match game.phase {
+                            GamePhase::Setup(player) => {
+                                if player == ui.local_player {
+                                    ui.cursor = player.setup_positions()[0];
+                                    UiMode::Setup
+                                } else {
+                                    UiMode::TurnPass
+                                }
                             }
-                        }
-                        GamePhase::Playing => {
-                            if game.current_player == ui.local_player {
-                                UiMode::MoveSelect
-                            } else {
-                                UiMode::TurnPass
+                            GamePhase::Playing => {
+                                if game.current_player == ui.local_player {
+                                    UiMode::MoveSelect
+                                } else {
+                                    UiMode::TurnPass
+                                }
                             }
-                        }
-                        GamePhase::GameOver(_) => UiMode::GameOver,
-                    };
+                            GamePhase::GameOver(_) => UiMode::GameOver,
+                        };
+                    } else {
+                        ui.mode = UiMode::TurnPass;
+                    }
                 }
             }
         }
@@ -184,4 +254,13 @@ fn run_app(
             }
         }
     }
+}
+
+fn generate_random_client_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("client-{}", nanos)
 }

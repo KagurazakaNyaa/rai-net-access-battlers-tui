@@ -20,26 +20,54 @@ pub fn end_turn(game: &mut GameState, ui: &mut crate::ui::state::UiState) {
     match game.phase {
         crate::GamePhase::GameOver(winner) => {
             ui.mode = crate::ui::state::UiMode::GameOver;
-            ui.message = format!(
-                "Game Over. Winner: {}",
-                player_label_with_names(winner, &ui.player_names)
+            ui.message = ui.i18n.text_args(
+                "msg-game-over",
+                Some(crate::i18n::args_from_map(
+                    [(
+                        "player",
+                        player_label_with_names(&ui.i18n, winner, &ui.player_names),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
             );
         }
         _ => {
             ui.mode = crate::ui::state::UiMode::TurnPass;
-            ui.message = format!(
-                "Pass to {}. Press Enter.",
-                player_label_with_names(game.current_player, &ui.player_names)
+            ui.message = ui.i18n.text_args(
+                "help-turn-pass",
+                Some(crate::i18n::args_from_map(
+                    [(
+                        "player",
+                        player_label_with_names(&ui.i18n, game.current_player, &ui.player_names),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
             );
         }
     }
 }
 
-pub fn player_label_with_names(player: PlayerId, names: &[String; 2]) -> String {
-    match player {
-        PlayerId::P1 => format!("P1({})", names[0]),
-        PlayerId::P2 => format!("P2({})", names[1]),
-    }
+pub fn player_label_with_names(
+    i18n: &crate::i18n::I18n,
+    player: PlayerId,
+    names: &[String; 2],
+) -> String {
+    let role = match player {
+        PlayerId::P1 => i18n.text("player-role-p1"),
+        PlayerId::P2 => i18n.text("player-role-p2"),
+    };
+    let name = match player {
+        PlayerId::P1 => names[0].clone(),
+        PlayerId::P2 => names[1].clone(),
+    };
+    i18n.text_args(
+        "player-label",
+        Some(crate::i18n::args_from_map(
+            [("role", role), ("name", name)].into_iter().collect(),
+        )),
+    )
 }
 
 pub fn first_free_line_boost(game: &GameState) -> Option<usize> {
@@ -87,30 +115,33 @@ pub fn first_unused_not_found(game: &GameState) -> Option<usize> {
 pub fn help_text(game: &GameState, ui: &crate::ui::state::UiState) -> String {
     use crate::ui::state::UiMode;
     match ui.mode {
-        UiMode::Setup => "Setup: arrows move, L/V place, Backspace remove".to_string(),
-        UiMode::MoveSelect => {
-            "Move: arrows move, Enter select, T terminal, E enter server".to_string()
-        }
-        UiMode::MoveDest { .. } => {
-            "Move: arrows choose destination, Enter move, Esc cancel".to_string()
-        }
-        UiMode::TerminalMenu => {
-            "Terminal: 1 LineBoost, 2 VirusCheck, 3 Firewall, 4 404".to_string()
-        }
-        UiMode::LineBoost => "LineBoost: Enter to attach/detach, Esc back".to_string(),
-        UiMode::VirusCheck => "VirusCheck: Enter to reveal, Esc back".to_string(),
-        UiMode::Firewall => "Firewall: Enter place/remove, Esc back".to_string(),
-        UiMode::NotFoundFirst | UiMode::NotFoundSecond { .. } => {
-            "404: select two own cards".to_string()
-        }
-        UiMode::NotFoundSwap { .. } => "404: Y swap, N no-swap".to_string(),
-        UiMode::ServerReveal { .. } => "Server: Y reveal, N hide".to_string(),
-        UiMode::ServerStack { .. } => "Server: L to link stack, V to virus stack".to_string(),
-        UiMode::TurnPass => format!(
-            "Pass to {}. Enter to continue",
-            player_label_with_names(game.current_player, &ui.player_names)
+        UiMode::Lobby => ui.i18n.text("help-lobby"),
+        UiMode::JoinRoomInput => ui.i18n.text("help-room-input"),
+        UiMode::Setup => ui.i18n.text("help-setup"),
+        UiMode::MoveSelect => ui.i18n.text("help-move-select"),
+        UiMode::MoveDest { .. } => ui.i18n.text("help-move-dest"),
+        UiMode::TerminalMenu => ui.i18n.text("help-terminal"),
+        UiMode::LineBoost => ui.i18n.text("help-lineboost"),
+        UiMode::VirusCheck => ui.i18n.text("help-viruscheck"),
+        UiMode::Firewall => ui.i18n.text("help-firewall"),
+        UiMode::NotFoundFirst | UiMode::NotFoundSecond { .. } => ui.i18n.text("help-notfound"),
+        UiMode::NotFoundSwap { .. } => ui.i18n.text("help-notfound-swap"),
+        UiMode::ServerReveal { .. } => ui.i18n.text("help-server-reveal"),
+        UiMode::ServerStack { .. } => ui.i18n.text("help-server-stack"),
+        UiMode::TurnPass => ui.i18n.text_args(
+            "help-turn-pass",
+            Some(crate::i18n::args_from_map(
+                [(
+                    "player",
+                    player_label_with_names(&ui.i18n, game.current_player, &ui.player_names),
+                )]
+                .into_iter()
+                .collect(),
+            )),
         ),
-        UiMode::BoostContinue { .. } => "Boost: Enter move, N end".to_string(),
-        UiMode::GameOver => "Game over. Enter to exit".to_string(),
+        UiMode::BoostContinue { .. } => ui.i18n.text("help-boost-continue"),
+        UiMode::GameOver => ui.i18n.text("help-game-over"),
+        UiMode::RoomConfirm { .. } => ui.i18n.text("help-confirm"),
+        UiMode::RoomCreateDialog => ui.i18n.text("help-create-dialog"),
     }
 }

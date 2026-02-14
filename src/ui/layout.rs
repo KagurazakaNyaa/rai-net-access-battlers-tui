@@ -21,7 +21,7 @@ pub fn compute_layout(area: Rect) -> LayoutInfo {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(10),
-            Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Length(1),
         ])
         .split(area);
