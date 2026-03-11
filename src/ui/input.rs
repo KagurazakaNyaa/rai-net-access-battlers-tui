@@ -12,20 +12,30 @@ use crate::ui::util::{
 use crate::{GamePhase, GameState, OnlineCardType, Position, StackChoice};
 
 pub fn handle_key(key: KeyEvent, game: &mut GameState, ui: &mut UiState) -> io::Result<bool> {
-    if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q') {
-        return Ok(true);
-    }
-
-    if key.code == KeyCode::Char('h') || key.code == KeyCode::Char('H') {
-        ui.message = help_text(game, ui);
+    if key.code == KeyCode::Tab {
+        ui.focus_input = !ui.focus_input;
+        ui.command_mode = ui.focus_input;
+        if !ui.focus_input {
+            ui.command_input.clear();
+            ui.message = ui.i18n.text("msg-focus-game");
+        } else {
+            ui.message = ui.i18n.text("msg-focus-input");
+        }
         ui.menu = None;
         return Ok(false);
     }
 
-    if let Some(action) = key_to_menu_action(&key) {
-        if let Some(menu_action) = apply_menu_action(action, game, ui)? {
-            return Ok(menu_action);
-        }
+    if ui.command_mode {
+        return handle_command_input(key, game, ui);
+    }
+
+    if key.code == KeyCode::Char('/') && key.modifiers.is_empty() {
+        ui.command_mode = true;
+        ui.focus_input = true;
+        ui.command_input = "/".to_string();
+        ui.message = ui.i18n.text("msg-command-input");
+        ui.menu = None;
+        return Ok(false);
     }
 
     if ui.is_spectator {
@@ -36,6 +46,16 @@ pub fn handle_key(key: KeyEvent, game: &mut GameState, ui: &mut UiState) -> io::
     if ui.op_sender.is_some() && ui.local_player != game.current_player {
         ui.message = ui.i18n.text("status-wait-opponent");
         return Ok(false);
+    }
+
+    if matches!(key.code, KeyCode::Char(_)) {
+        return Ok(false);
+    }
+
+    if let Some(action) = key_to_menu_action(&key) {
+        if let Some(menu_action) = apply_menu_action(action, game, ui)? {
+            return Ok(menu_action);
+        }
     }
 
     let exit = handle_key_inner(key, game, ui)?;
@@ -54,6 +74,19 @@ pub fn handle_mouse(
     }
 
     let layout = compute_layout(area);
+    if rect_contains(layout.input, mouse.column, mouse.row) {
+        ui.focus_input = true;
+        ui.command_mode = true;
+        ui.menu = None;
+        ui.message = ui.i18n.text("msg-focus-input");
+        return Ok(false);
+    }
+    if rect_contains(layout.body, mouse.column, mouse.row) {
+        ui.focus_input = false;
+        ui.command_mode = false;
+        ui.menu = None;
+        ui.message = ui.i18n.text("msg-focus-game");
+    }
     if let Some(menu) = &ui.menu {
         if rect_contains(menu.rect, mouse.column, mouse.row) {
             if let Some(action) = menu_action_at(menu, mouse.column, mouse.row) {
@@ -405,73 +438,6 @@ fn handle_lobby_keys(key: KeyEvent, ui: &mut UiState) {
                 ui.selected_room += 1;
             }
         }
-        KeyCode::Char('l') | KeyCode::Char('L') => {
-            if let Some(sender) = &ui.op_sender {
-                let _ = sender.send("OP ROOM LIST".to_string());
-            }
-        }
-        KeyCode::Char('a') | KeyCode::Char('A') => {
-            if let Some(sender) = &ui.op_sender {
-                let _ = sender.send("OP ROOM AUTO".to_string());
-            }
-        }
-        KeyCode::Char('c') | KeyCode::Char('C') => {
-            ui.room_input.clear();
-            ui.room_id_input.clear();
-            ui.mode = UiMode::RoomCreateDialog;
-            ui.create_focus = crate::ui::state::CreateFocus::Name;
-            ui.message = ui.i18n.text("msg-create-room");
-        }
-        KeyCode::Char('j') | KeyCode::Char('J') => {
-            ui.room_id_input.clear();
-            ui.mode = UiMode::JoinRoomInput;
-            ui.message = ui.i18n.text("msg-join-room");
-        }
-        KeyCode::Char('t') | KeyCode::Char('T') => {
-            ui.auto_join = !ui.auto_join;
-            ui.message = ui.i18n.text_args(
-                "msg-auto-join-toggle",
-                Some(crate::i18n::args_from_map(
-                    [(
-                        "state",
-                        ui.i18n.text(if ui.auto_join {
-                            "msg-auto-on"
-                        } else {
-                            "msg-auto-off"
-                        }),
-                    )]
-                    .into_iter()
-                    .collect(),
-                )),
-            );
-        }
-        KeyCode::Char('i') | KeyCode::Char('I') => {
-            ui.show_room_id = !ui.show_room_id;
-            ui.message = ui.i18n.text_args(
-                "msg-show-id-toggle",
-                Some(crate::i18n::args_from_map(
-                    [(
-                        "state",
-                        ui.i18n.text(if ui.show_room_id {
-                            "msg-show-on"
-                        } else {
-                            "msg-show-off"
-                        }),
-                    )]
-                    .into_iter()
-                    .collect(),
-                )),
-            );
-        }
-        KeyCode::Char('s') | KeyCode::Char('S') => {
-            if let Some(room) = ui.rooms.get(ui.selected_room) {
-                if let Some(id) = &room.id {
-                    if let Some(sender) = &ui.op_sender {
-                        let _ = sender.send(format!("OP ROOM SPECTATE {}", id));
-                    }
-                }
-            }
-        }
         KeyCode::Enter => {
             if let Some(room) = ui.rooms.get(ui.selected_room) {
                 if room.id.is_some() {
@@ -521,6 +487,363 @@ fn handle_join_room_input(key: KeyEvent, ui: &mut UiState) {
         }
         _ => {}
     }
+}
+
+fn handle_command_input(key: KeyEvent, game: &mut GameState, ui: &mut UiState) -> io::Result<bool> {
+    match key.code {
+        KeyCode::Esc => {
+            ui.command_mode = false;
+            ui.focus_input = false;
+            ui.command_input.clear();
+            ui.message = ui.i18n.text("msg-command-cancel");
+            return Ok(false);
+        }
+        KeyCode::Enter => {
+            let command = ui.command_input.trim().to_string();
+            ui.command_mode = false;
+            ui.focus_input = false;
+            ui.command_input.clear();
+            ui.menu = None;
+            return run_command(command, game, ui);
+        }
+        KeyCode::Backspace => {
+            ui.command_input.pop();
+        }
+        KeyCode::Char(ch) => {
+            if !ch.is_control() {
+                ui.command_input.push(ch);
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn run_command(command: String, game: &mut GameState, ui: &mut UiState) -> io::Result<bool> {
+    if command.is_empty() {
+        ui.message = ui.i18n.text("msg-command-empty");
+        return Ok(false);
+    }
+
+    if !command.starts_with('/') {
+        ui.message = ui.i18n.text("msg-command-prefix");
+        return Ok(false);
+    }
+
+    let normalized = command.trim().to_string();
+    ui.log.push(normalized.clone());
+
+    let parts: Vec<&str> = normalized.split_whitespace().collect();
+    let verb = parts.get(0).copied().unwrap_or("/");
+
+    match verb {
+        "/help" => {
+            ui.message = help_text(game, ui);
+            return Ok(false);
+        }
+        "/quit" => {
+            return Ok(true);
+        }
+        "/lobby" => {
+            ui.mode = UiMode::Lobby;
+            ui.message = ui.i18n.text("msg-lobby");
+            return Ok(false);
+        }
+        "/rooms" => {
+            if let Some(sender) = &ui.op_sender {
+                let _ = sender.send("OP ROOM LIST".to_string());
+            }
+            return Ok(false);
+        }
+        "/auto" => {
+            ui.auto_join = !ui.auto_join;
+            ui.message = ui.i18n.text_args(
+                "msg-auto-join-toggle",
+                Some(crate::i18n::args_from_map(
+                    [(
+                        "state",
+                        ui.i18n.text(if ui.auto_join {
+                            "msg-auto-on"
+                        } else {
+                            "msg-auto-off"
+                        }),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
+            );
+            return Ok(false);
+        }
+        "/showid" => {
+            ui.show_room_id = !ui.show_room_id;
+            ui.message = ui.i18n.text_args(
+                "msg-show-id-toggle",
+                Some(crate::i18n::args_from_map(
+                    [(
+                        "state",
+                        ui.i18n.text(if ui.show_room_id {
+                            "msg-show-on"
+                        } else {
+                            "msg-show-off"
+                        }),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
+            );
+            return Ok(false);
+        }
+        "/create" => {
+            let name = parts
+                .get(1)
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| ui.i18n.text("msg-room-default"));
+            let id = parts.get(2).copied().unwrap_or("-");
+            let auto = if ui.auto_join { 1 } else { 0 };
+            let show = if ui.show_room_id { 1 } else { 0 };
+            if let Some(sender) = &ui.op_sender {
+                let _ = sender.send(format!("OP ROOM CREATE {} {} {} {}", name, id, auto, show));
+            }
+            ui.message = ui.i18n.text("msg-create-room");
+            return Ok(false);
+        }
+        "/join" => {
+            if let Some(room_id) = parts.get(1).copied() {
+                if let Some(sender) = &ui.op_sender {
+                    let _ = sender.send(format!("OP ROOM JOIN {}", room_id));
+                }
+                ui.message = ui.i18n.text("confirm-join");
+                return Ok(false);
+            }
+            if let Some(room) = ui.rooms.get(ui.selected_room) {
+                if let Some(id) = &room.id {
+                    if let Some(sender) = &ui.op_sender {
+                        let _ = sender.send(format!("OP ROOM JOIN {}", id));
+                    }
+                    ui.message = ui.i18n.text("confirm-join");
+                    return Ok(false);
+                }
+            }
+            ui.message = ui.i18n.text("msg-command-join-usage");
+            return Ok(false);
+        }
+        "/spectate" => {
+            if let Some(room_id) = parts.get(1).copied() {
+                if let Some(sender) = &ui.op_sender {
+                    let _ = sender.send(format!("OP ROOM SPECTATE {}", room_id));
+                }
+                return Ok(false);
+            }
+            if let Some(room) = ui.rooms.get(ui.selected_room) {
+                if let Some(id) = &room.id {
+                    if let Some(sender) = &ui.op_sender {
+                        let _ = sender.send(format!("OP ROOM SPECTATE {}", id));
+                    }
+                }
+            }
+            return Ok(false);
+        }
+        _ => {}
+    }
+
+    match ui.mode {
+        UiMode::Setup => match verb {
+            "/link" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('l')), game, ui)
+                    .map(|_| false)
+            }
+            "/virus" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('v')), game, ui)
+                    .map(|_| false)
+            }
+            "/remove" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Backspace), game, ui)
+                    .map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::MoveSelect => match verb {
+            "/select" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Enter), game, ui).map(|_| false)
+            }
+            "/terminal" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('t')), game, ui)
+                    .map(|_| false)
+            }
+            "/enter" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('e')), game, ui)
+                    .map(|_| false)
+            }
+            "/up" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Up), game, ui).map(|_| false)
+            }
+            "/down" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Down), game, ui).map(|_| false)
+            }
+            "/left" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Left), game, ui).map(|_| false)
+            }
+            "/right" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Right), game, ui).map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::MoveDest { .. } => match verb {
+            "/move" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Enter), game, ui).map(|_| false)
+            }
+            "/cancel" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Esc), game, ui).map(|_| false)
+            }
+            "/up" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Up), game, ui).map(|_| false)
+            }
+            "/down" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Down), game, ui).map(|_| false)
+            }
+            "/left" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Left), game, ui).map(|_| false)
+            }
+            "/right" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Right), game, ui).map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::BoostContinue { .. } => match verb {
+            "/move" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Enter), game, ui).map(|_| false)
+            }
+            "/end" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('n')), game, ui)
+                    .map(|_| false)
+            }
+            "/up" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Up), game, ui).map(|_| false)
+            }
+            "/down" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Down), game, ui).map(|_| false)
+            }
+            "/left" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Left), game, ui).map(|_| false)
+            }
+            "/right" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Right), game, ui).map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::TerminalMenu => match verb {
+            "/lineboost" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('1')), game, ui)
+                    .map(|_| false)
+            }
+            "/viruscheck" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('2')), game, ui)
+                    .map(|_| false)
+            }
+            "/firewall" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('3')), game, ui)
+                    .map(|_| false)
+            }
+            "/notfound" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('4')), game, ui)
+                    .map(|_| false)
+            }
+            "/back" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Esc), game, ui).map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::LineBoost
+        | UiMode::VirusCheck
+        | UiMode::Firewall
+        | UiMode::NotFoundFirst
+        | UiMode::NotFoundSecond { .. } => match verb {
+            "/apply" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Enter), game, ui).map(|_| false)
+            }
+            "/back" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Esc), game, ui).map(|_| false)
+            }
+            "/up" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Up), game, ui).map(|_| false)
+            }
+            "/down" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Down), game, ui).map(|_| false)
+            }
+            "/left" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Left), game, ui).map(|_| false)
+            }
+            "/right" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Right), game, ui).map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::NotFoundSwap { .. } => match verb {
+            "/swap" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('y')), game, ui)
+                    .map(|_| false)
+            }
+            "/keep" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('n')), game, ui)
+                    .map(|_| false)
+            }
+            "/back" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Esc), game, ui).map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::ServerReveal { .. } => match verb {
+            "/reveal" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('y')), game, ui)
+                    .map(|_| false)
+            }
+            "/hide" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('n')), game, ui)
+                    .map(|_| false)
+            }
+            "/back" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Esc), game, ui).map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::ServerStack { .. } => match verb {
+            "/link" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('l')), game, ui)
+                    .map(|_| false)
+            }
+            "/virus" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Char('v')), game, ui)
+                    .map(|_| false)
+            }
+            "/back" => {
+                return apply_menu_action(MenuAction::Key(KeyCode::Esc), game, ui).map(|_| false)
+            }
+            _ => {}
+        },
+        UiMode::RoomConfirm { .. } => match verb {
+            "/yes" => return handle_confirm_action(ConfirmAction::Yes, ui),
+            "/no" => return handle_confirm_action(ConfirmAction::No, ui),
+            _ => {}
+        },
+        UiMode::RoomCreateDialog => match verb {
+            "/yes" => {
+                ui.mode = UiMode::RoomConfirm {
+                    action: crate::ui::state::RoomConfirmAction::Create,
+                };
+                ui.confirm_message = ui.i18n.text("confirm-create");
+                return Ok(false);
+            }
+            "/no" => {
+                ui.mode = UiMode::Lobby;
+                return Ok(false);
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+
+    ui.message = ui.i18n.text("msg-command-unknown");
+    Ok(false)
 }
 
 fn handle_create_dialog_key(key: KeyEvent, ui: &mut UiState) -> io::Result<bool> {
@@ -613,16 +936,6 @@ fn apply_phase_transition(phase_before: GamePhase, game: &GameState, ui: &mut Ui
 
 fn key_to_menu_action(key: &KeyEvent) -> Option<MenuAction> {
     match key.code {
-        KeyCode::Char('l') | KeyCode::Char('L') => Some(MenuAction::Key(KeyCode::Char('l'))),
-        KeyCode::Char('v') | KeyCode::Char('V') => Some(MenuAction::Key(KeyCode::Char('v'))),
-        KeyCode::Char('y') | KeyCode::Char('Y') => Some(MenuAction::Key(KeyCode::Char('y'))),
-        KeyCode::Char('n') | KeyCode::Char('N') => Some(MenuAction::Key(KeyCode::Char('n'))),
-        KeyCode::Char('t') | KeyCode::Char('T') => Some(MenuAction::Key(KeyCode::Char('t'))),
-        KeyCode::Char('e') | KeyCode::Char('E') => Some(MenuAction::Key(KeyCode::Char('e'))),
-        KeyCode::Char('1') => Some(MenuAction::Key(KeyCode::Char('1'))),
-        KeyCode::Char('2') => Some(MenuAction::Key(KeyCode::Char('2'))),
-        KeyCode::Char('3') => Some(MenuAction::Key(KeyCode::Char('3'))),
-        KeyCode::Char('4') => Some(MenuAction::Key(KeyCode::Char('4'))),
         KeyCode::Enter => Some(MenuAction::Key(KeyCode::Enter)),
         KeyCode::Esc => Some(MenuAction::Key(KeyCode::Esc)),
         KeyCode::Backspace => Some(MenuAction::Key(KeyCode::Backspace)),
@@ -643,16 +956,6 @@ fn apply_menu_action(
 }
 
 fn handle_key_inner(key: KeyEvent, game: &mut GameState, ui: &mut UiState) -> io::Result<bool> {
-    if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q') {
-        return Ok(true);
-    }
-
-    if key.code == KeyCode::Char('h') || key.code == KeyCode::Char('H') {
-        ui.message = help_text(game, ui);
-        ui.menu = None;
-        return Ok(false);
-    }
-
     match ui.mode {
         UiMode::Lobby => handle_lobby_keys(key, ui),
         UiMode::JoinRoomInput => handle_join_room_input(key, ui),
@@ -1071,7 +1374,13 @@ fn handle_boost_continue_keys(
                 );
             }
         },
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            if let Some(sender) = &ui.op_sender {
+                let _ = sender.send("OP ENDTURN".to_string());
+            }
+            end_turn(game, ui)
+        }
+        KeyCode::Esc => {
             if let Some(sender) = &ui.op_sender {
                 let _ = sender.send("OP ENDTURN".to_string());
             }

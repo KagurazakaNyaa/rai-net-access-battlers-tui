@@ -7,10 +7,6 @@ pub fn handle_cursor_keys(key: crossterm::event::KeyEvent, cursor: &mut Position
         KeyCode::Down => cursor.row = (cursor.row + 1).min(7),
         KeyCode::Left => cursor.col = cursor.col.saturating_sub(1),
         KeyCode::Right => cursor.col = (cursor.col + 1).min(7),
-        KeyCode::Char('k') if key.modifiers.is_empty() => cursor.row = cursor.row.saturating_sub(1),
-        KeyCode::Char('j') if key.modifiers.is_empty() => cursor.row = (cursor.row + 1).min(7),
-        KeyCode::Char('h') if key.modifiers.is_empty() => cursor.col = cursor.col.saturating_sub(1),
-        KeyCode::Char('l') if key.modifiers.is_empty() => cursor.col = (cursor.col + 1).min(7),
         _ => {}
     }
 }
@@ -114,6 +110,10 @@ pub fn first_unused_not_found(game: &GameState) -> Option<usize> {
 
 pub fn help_text(game: &GameState, ui: &crate::ui::state::UiState) -> String {
     use crate::ui::state::UiMode;
+    if ui.command_mode {
+        return ui.i18n.text("help-command");
+    }
+
     match ui.mode {
         UiMode::Lobby => ui.i18n.text("help-lobby"),
         UiMode::JoinRoomInput => ui.i18n.text("help-room-input"),

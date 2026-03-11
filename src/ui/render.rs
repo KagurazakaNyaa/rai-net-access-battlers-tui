@@ -9,29 +9,6 @@ use crate::{GamePhase, GameState, OnlineCardType, PlayerId, Position};
 
 pub fn draw(frame: &mut ratatui::Frame, game: &GameState, ui: &UiState) {
     let layout = compute_layout(frame.area());
-
-    if matches!(
-        ui.mode,
-        crate::ui::state::UiMode::Lobby
-            | crate::ui::state::UiMode::JoinRoomInput
-            | crate::ui::state::UiMode::RoomConfirm { .. }
-            | crate::ui::state::UiMode::RoomCreateDialog
-    ) {
-        let lobby = lobby_panel(ui);
-        frame.render_widget(lobby, layout.body);
-        if matches!(ui.mode, crate::ui::state::UiMode::RoomConfirm { .. }) {
-            let dialog = confirm_panel(layout.area);
-            frame.render_widget(Clear, dialog);
-            frame.render_widget(confirm_panel_content(ui), dialog);
-        }
-        if matches!(ui.mode, crate::ui::state::UiMode::RoomCreateDialog) {
-            let dialog = confirm_panel(layout.area);
-            frame.render_widget(Clear, dialog);
-            frame.render_widget(create_panel_content(ui), dialog);
-        }
-        return;
-    }
-
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
             ui.i18n.text("header-title"),
@@ -71,13 +48,51 @@ pub fn draw(frame: &mut ratatui::Frame, game: &GameState, ui: &UiState) {
     ]));
     frame.render_widget(header, layout.header);
 
-    let p1 = stacks_panel(game, ui, PlayerId::P1, &ui.player_names);
-    let p2 = stacks_panel(game, ui, PlayerId::P2, &ui.player_names);
-    frame.render_widget(p1, layout.left_panel);
-    frame.render_widget(p2, layout.right_panel);
+    if matches!(
+        ui.mode,
+        crate::ui::state::UiMode::Lobby
+            | crate::ui::state::UiMode::JoinRoomInput
+            | crate::ui::state::UiMode::RoomConfirm { .. }
+            | crate::ui::state::UiMode::RoomCreateDialog
+    ) {
+        let lobby = lobby_panel(ui);
+        frame.render_widget(lobby, layout.body);
+        if matches!(ui.mode, crate::ui::state::UiMode::RoomConfirm { .. }) {
+            let dialog = confirm_panel(layout.area);
+            frame.render_widget(Clear, dialog);
+            frame.render_widget(confirm_panel_content(ui), dialog);
+        }
+        if matches!(ui.mode, crate::ui::state::UiMode::RoomCreateDialog) {
+            let dialog = confirm_panel(layout.area);
+            frame.render_widget(Clear, dialog);
+            frame.render_widget(create_panel_content(ui), dialog);
+        }
+    } else {
+        let p1 = stacks_panel(game, ui, PlayerId::P1, &ui.player_names);
+        let p2 = stacks_panel(game, ui, PlayerId::P2, &ui.player_names);
+        frame.render_widget(p1, layout.left_panel);
+        frame.render_widget(p2, layout.right_panel);
 
-    let board = board_panel(game, ui);
-    frame.render_widget(board, layout.board);
+        let board = board_panel(game, ui);
+        frame.render_widget(board, layout.board);
+
+        if let Some(menu) = &ui.menu {
+            let lines = menu
+                .items
+                .iter()
+                .map(|item| Line::from(item.label.clone()))
+                .collect::<Vec<_>>();
+            let menu_widget = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(ui.i18n.text("menu-actions")),
+                )
+                .style(Style::default().bg(Color::Black).fg(Color::White));
+            frame.render_widget(Clear, menu.rect);
+            frame.render_widget(menu_widget, menu.rect);
+        }
+    }
 
     let mut status_lines = vec![Line::from(ui.message.clone())];
     if !ui.room_players.is_empty() {
@@ -124,25 +139,38 @@ pub fn draw(frame: &mut ratatui::Frame, game: &GameState, ui: &UiState) {
         .rev()
         .collect::<Vec<_>>()
         .join(" | ");
-    let log = Paragraph::new(log_text).block(Block::default().borders(Borders::TOP));
+    let log_lines = vec![
+        Line::from(ui.i18n.text("command-reference")),
+        Line::from(log_text),
+    ];
+    let log = Paragraph::new(log_lines).block(Block::default().borders(Borders::TOP));
     frame.render_widget(log, layout.log);
 
-    if let Some(menu) = &ui.menu {
-        let lines = menu
-            .items
-            .iter()
-            .map(|item| Line::from(item.label.clone()))
-            .collect::<Vec<_>>();
-        let menu_widget = Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(ui.i18n.text("menu-actions")),
-            )
-            .style(Style::default().bg(Color::Black).fg(Color::White));
-        frame.render_widget(Clear, menu.rect);
-        frame.render_widget(menu_widget, menu.rect);
-    }
+    let (input_prompt, input_style) = if ui.command_mode {
+        (
+            ui.i18n.text("input-command-active"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if ui.focus_input {
+        (
+            ui.i18n.text("input-command-idle"),
+            Style::default().fg(Color::White),
+        )
+    } else {
+        (
+            ui.i18n.text("input-command-idle"),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
+    let input_line = Line::from(vec![
+        Span::styled(input_prompt, Style::default().fg(Color::DarkGray)),
+        Span::raw(" "),
+        Span::styled(ui.command_input.clone(), input_style),
+    ]);
+    let input = Paragraph::new(vec![input_line]).block(Block::default().borders(Borders::TOP));
+    frame.render_widget(input, layout.input);
 }
 
 fn stacks_panel(
@@ -348,46 +376,6 @@ fn lobby_panel(ui: &UiState) -> Paragraph<'static> {
         );
         lines.push(Line::from(line));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(ui.i18n.text_args(
-        "lobby-input",
-        Some(crate::i18n::args_from_map(
-            [("input", ui.room_input.clone())].into_iter().collect(),
-        )),
-    )));
-    lines.push(Line::from(ui.i18n.text_args(
-        "lobby-id-input",
-        Some(crate::i18n::args_from_map(
-            [("input", ui.room_id_input.clone())].into_iter().collect(),
-        )),
-    )));
-    lines.push(Line::from(
-        ui.i18n.text_args(
-            "lobby-create-options",
-            Some(crate::i18n::args_from_map(
-                [
-                    (
-                        "auto",
-                        ui.i18n.text(if ui.auto_join {
-                            "msg-auto-on"
-                        } else {
-                            "msg-auto-off"
-                        }),
-                    ),
-                    (
-                        "show",
-                        ui.i18n.text(if ui.show_room_id {
-                            "msg-show-on"
-                        } else {
-                            "msg-show-off"
-                        }),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            )),
-        ),
-    ));
     Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)

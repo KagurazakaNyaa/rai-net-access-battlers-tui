@@ -10,6 +10,7 @@ pub struct LayoutInfo {
     pub right_panel: Rect,
     pub status: Rect,
     pub log: Rect,
+    pub input: Rect,
     pub left_inner: Rect,
     pub board_inner: Rect,
     pub right_inner: Rect,
@@ -22,7 +23,8 @@ pub fn compute_layout(area: Rect) -> LayoutInfo {
             Constraint::Length(1),
             Constraint::Min(10),
             Constraint::Length(3),
-            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(2),
         ])
         .split(area);
 
@@ -52,6 +54,7 @@ pub fn compute_layout(area: Rect) -> LayoutInfo {
         right_panel,
         status: rows[2],
         log: rows[3],
+        input: rows[4],
         left_inner,
         board_inner,
         right_inner,
